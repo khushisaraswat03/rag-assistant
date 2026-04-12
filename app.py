@@ -1,7 +1,8 @@
 from pypdf import PdfReader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from sentence_transformers import SentenceTransformer
-
+import faiss
+import numpy as np
 # Step 1: Load PDF
 pdf_path = "sample.pdf"
 
@@ -52,3 +53,27 @@ embeddings = model.encode(chunks)
 print("\n----- EMBEDDINGS -----\n")
 print("Number of embeddings:", len(embeddings))
 print("Shape of one embedding:", embeddings[0].shape)
+
+
+embedding_array = np.array(embeddings)
+
+dimension = embedding_array.shape[1]
+
+index = faiss.IndexFlatL2(dimension)
+index.add(embedding_array)
+
+# Step 9: Query
+query = "What is Machine Learning?"
+
+# Convert query to embedding
+query_embedding = model.encode([query])
+
+# Search top 2 similar chunks
+k = 2
+distances, indices = index.search(np.array(query_embedding), k)
+
+print("\n----- SEARCH RESULTS -----\n")
+
+for i in indices[0]:
+    print(chunks[i])
+    print("\n---\n")
