@@ -1,5 +1,7 @@
 from pypdf import PdfReader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
+from sentence_transformers import SentenceTransformer
+
 # Step 1: Load PDF
 pdf_path = "sample.pdf"
 
@@ -37,3 +39,16 @@ print("Total chunks:", len(chunks))
 # Print first 2 chunks
 for i, chunk in enumerate(chunks[:2]):
     print(f"\nChunk {i+1}:\n{chunk[:200]}")
+
+
+
+# Step 6: Load embedding model (FREE)
+model = SentenceTransformer('all-MiniLM-L6-v2')
+
+# Step 7: Convert chunks into embeddings
+embeddings = model.encode(chunks)
+
+# Step 8: Print info
+print("\n----- EMBEDDINGS -----\n")
+print("Number of embeddings:", len(embeddings))
+print("Shape of one embedding:", embeddings[0].shape)
