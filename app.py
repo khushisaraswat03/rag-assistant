@@ -3,6 +3,7 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from sentence_transformers import SentenceTransformer
 import faiss
 import numpy as np
+from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 # Step 1: Load PDF
 pdf_path = "sample.pdf"
 
@@ -77,3 +78,46 @@ print("\n----- SEARCH RESULTS -----\n")
 for i in indices[0]:
     print(chunks[i])
     print("\n---\n")
+    
+
+
+
+
+
+
+#
+# Get retrieved chunks
+retrieved_chunks = [chunks[i] for i in indices[0]]
+
+# Combine into context
+context = "\n".join(retrieved_chunks)
+
+prompt = f"""
+You are a helpful assistant.
+
+Answer the question based ONLY on the context below.
+
+Context:
+{context}
+
+Question:
+{query}
+
+Answer:
+"""
+#Load model + tokenizer
+tokenizer = AutoTokenizer.from_pretrained("google/flan-t5-base")
+model_llm = AutoModelForSeq2SeqLM.from_pretrained("google/flan-t5-base")
+
+# Tokenize input
+inputs = tokenizer(prompt, return_tensors="pt", truncation=True)
+
+# Generate output
+outputs = model_llm.generate(**inputs, max_new_tokens=150)
+
+# Decode result
+answer = tokenizer.decode(outputs[0], skip_special_tokens=True)
+
+print("\n----- FINAL ANSWER -----\n")
+print(answer)
+
