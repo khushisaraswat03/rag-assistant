@@ -4,3 +4,5 @@ openai
 pypdf
 tiktoken
 python-dotenv
+streamlit
+pypdf
