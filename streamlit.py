@@ -1,6 +1,6 @@
 import streamlit as st
 from pypdf import PdfReader
-from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_text_splitter import RecursiveCharacterTextSplitter
 from sentence_transformers import SentenceTransformer
 import faiss
 import numpy as np
