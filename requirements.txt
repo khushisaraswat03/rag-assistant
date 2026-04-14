@@ -6,3 +6,4 @@ faiss-cpu
 transformers
 torch
 torchvision
+langchain
