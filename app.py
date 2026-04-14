@@ -64,13 +64,13 @@ index = faiss.IndexFlatL2(dimension)
 index.add(embedding_array)
 
 # Step 9: Query
-query = "What is Machine Learning?"
+query = "What is LLM?"
 
 # Convert query to embedding
 query_embedding = model.encode([query])
 
 # Search top 2 similar chunks
-k = 2
+k = 5
 distances, indices = index.search(np.array(query_embedding), k)
 
 print("\n----- SEARCH RESULTS -----\n")
@@ -93,9 +93,10 @@ retrieved_chunks = [chunks[i] for i in indices[0]]
 context = "\n".join(retrieved_chunks)
 
 prompt = f"""
-You are a helpful assistant.
+You are an AI assistant.
 
-Answer the question based ONLY on the context below.
+Explain the answer clearly in simple terms using 3-4 sentences.
+Do not just repeat phrases. Combine ideas into a proper explanation.
 
 Context:
 {context}
