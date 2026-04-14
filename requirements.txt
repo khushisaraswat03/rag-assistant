@@ -1,8 +1,8 @@
-langchain
-faiss-cpu
-openai
-pypdf
-tiktoken
-python-dotenv
 streamlit
 pypdf
+langchain
+sentence-transformers
+faiss-cpu
+transformers
+torch
+torchvision
