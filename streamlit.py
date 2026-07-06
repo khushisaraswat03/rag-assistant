@@ -109,9 +109,8 @@ def process_pdf(file):
     chunks = splitter.split_text(text)
 
     embed_model = SentenceTransformer('all-MiniLM-L6-v2')
-    embeddings = embed_model.encode(chunks)
-
-    index = faiss.IndexFlatL2(len(embeddings[0]))
+    embeddings = embed_model.encode(chunks, normalize_embeddings=True)   # <-- added normalize_embeddings=True
+    index = faiss.IndexFlatIP(len(embeddings[0]))
     index.add(np.array(embeddings))
 
     return chunks, index
@@ -141,7 +140,7 @@ if uploaded_file:
         with st.spinner("Thinking... 🤔"):
 
             # Query embedding
-            query_embedding = embed_model.encode([query])
+            query_embedding = embed_model.encode([query], normalize_embeddings=True)
 
             # Search
             k = 4
@@ -166,7 +165,8 @@ Question:
 
 Answer:
 """
-
+            debug_ids = tokenizer(prompt, return_tensors="pt", truncation=False)["input_ids"]
+            print("Prompt length:", debug_ids.shape[1], "| Model max:", tokenizer.model_max_length)
             # Generate answer
             inputs = tokenizer(prompt, return_tensors="pt", truncation=True)
             outputs = model_llm.generate(**inputs, max_new_tokens=200)
