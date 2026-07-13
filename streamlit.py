@@ -1,188 +1,178 @@
+import os
 import streamlit as st
-from pypdf import PdfReader
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from sentence_transformers import SentenceTransformer
 import faiss
 import numpy as np
-from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
+import pdfplumber
+import pandas as pd
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from sentence_transformers import SentenceTransformer
+from groq import Groq
+from dotenv import load_dotenv
 
-# -------------------- PAGE CONFIG --------------------
-st.set_page_config(page_title="RAG Assistant", layout="centered")
+# New LangChain imports for handling unstructured text/docs
+from langchain_core.documents import Document
+from langchain_community.document_loaders import Docx2txtLoader, CSVLoader, TextLoader
 
-st.markdown("""
-<style>
+# 1. Load environment variables
+load_dotenv()
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
-/* Background */
-.stApp {
-    background: linear-gradient(135deg, #0f172a, #020617);
-    color: white;
-}
+if not GROQ_API_KEY:
+    st.error("❌ GROQ_API_KEY is missing. Please check your .env file.")
+    st.stop()
 
-/* Main container transparent */
-[data-testid="stAppViewContainer"] {
-    background: transparent;
-}
+client = Groq(api_key=GROQ_API_KEY)
 
-/* Remove header white */
-[data-testid="stHeader"] {
-    background: transparent;
-}
-
-/* Card style (UPLOAD + sections) */
-.block-container {
-    background: rgba(30, 41, 59, 0.6);
-    padding: 2rem;
-    border-radius: 15px;
-    backdrop-filter: blur(10px);
-}
-
-/* Input box */
-.stTextInput input {
-    background-color: black;
-    color: white;
-    border-radius: 10px;
-    border: none;
-}
-
-/* File uploader */
-.stFileUploader {
-    background-color: #1e293b;
-    padding: 15px;
-    border-radius: 12px;
-}
-[data-testid="stFileUploader"] button {
-    background-color: #0f172a !important;
-    color: white !important;
-    border: 1px solid #64748b;
-    border-radius: 8px;
-    font-weight: 600;
-}
-
-[data-testid="stFileUploader"] button span {
-    color: white !important;
-}
-/* Answer box (lighter than background) */
-.answer-box {
-    background: black;
-    padding: 20px;
-    border-radius: 12px;
-    border: 1px solid #475569;
-    font-size: 16px;
-}
-
-/* Headings */
-h1, h2, h3, p {
-    color: white !important;
-}
-
-</style>
-""", unsafe_allow_html=True)
-# -------------------- UI --------------------
-st.markdown("<h1>🤖 Personal Knowledge Assistant</h1>", unsafe_allow_html=True)
-st.markdown("<p style='text-align:center; color:gray;'>Ask questions from your PDF instantly</p>", unsafe_allow_html=True)
-
-st.divider()
-
-# -------------------- LOAD MODELS --------------------
 @st.cache_resource
-def load_models():
-    embed_model = SentenceTransformer('all-MiniLM-L6-v2')
-    tokenizer = AutoTokenizer.from_pretrained("google/flan-t5-base")
-    model = AutoModelForSeq2SeqLM.from_pretrained("google/flan-t5-base")
-    return embed_model, tokenizer, model
+def load_embedding_model():
+    return SentenceTransformer('all-MiniLM-L6-v2')
 
-# -------------------- PROCESS PDF --------------------
-@st.cache_data
-def process_pdf(file):
-    reader = PdfReader(file)
-    text = ""
+# 2. Unified File Processing Function
+def process_file(file):
+    file.seek(0)
+    file_extension = file.name.split(".")[-1].lower()
+    
+    # We will write temporary files because LangChain loaders expect file paths, 
+    # while Streamlit provides an in-memory byte stream.
+    temp_filename = f"temp_upload.{file_extension}"
+    with open(temp_filename, "wb") as f:
+        f.write(file.read())
+        
+    documents = []
+    
+    try:
+        # Dynamic routing based on extension
+        if file_extension == "pdf":
+            # Keeping our highly reliable pdfplumber approach
+            text = ""
+            with pdfplumber.open(temp_filename) as pdf:
+                for page in pdf.pages:
+                    extracted = page.extract_text() 
+                    if extracted:
+                        text += extracted + "\n"
+            documents = [Document(page_content=text)]
+            
+        elif file_extension == "docx":
+            loader = Docx2txtLoader(temp_filename)
+            documents = loader.load()
+            
+        elif file_extension == "txt":
+            loader = TextLoader(temp_filename)
+            documents = loader.load()
+            
+        elif file_extension == "csv":
+            loader = CSVLoader(temp_filename)
+            documents = loader.load()
+            
+        else:
+            st.error("Unsupported file format.")
+            return None, None
+            
+    except Exception as e:
+        st.error(f"Error parsing file: {e}")
+        return None, None
+    finally:
+        # Clean up the temporary file from disk immediately
+        if os.path.exists(temp_filename):
+            os.remove(temp_filename)
 
-    for page in reader.pages:
-        extracted = page.extract_text()
-        if extracted:
-            text += extracted
+    # Extract clean text from LangChain documents
+    combined_text = "\n\n".join([doc.page_content for doc in documents])
 
-    splitter = RecursiveCharacterTextSplitter(
-        chunk_size=400,
-        chunk_overlap=50
-    )
-    chunks = splitter.split_text(text)
+    if not combined_text.strip():
+        return None, None
 
-    embed_model = SentenceTransformer('all-MiniLM-L6-v2')
-    embeddings = embed_model.encode(chunks, normalize_embeddings=True)   # <-- added normalize_embeddings=True
+    # Chunking & Embedding
+    splitter = RecursiveCharacterTextSplitter(chunk_size=400, chunk_overlap=50)
+    chunks = splitter.split_text(combined_text)
+
+    if not chunks:
+        return None, None
+
+    model = load_embedding_model()
+    embeddings = model.encode(chunks, normalize_embeddings=True)
+    
     index = faiss.IndexFlatIP(len(embeddings[0]))
-    index.add(np.array(embeddings))
-
+    index.add(np.array(embeddings).astype('float32'))
+    
     return chunks, index
 
-# -------------------- FILE UPLOAD --------------------
-st.markdown("### 📂 Upload your PDF")
-uploaded_file = st.file_uploader("Choose a PDF file", type="pdf")
+# -------------------- UI LAYOUT --------------------
+st.title("My RAG Assistant 🤖")
+
+# Change the file uploader to accept multiple formats
+uploaded_file = st.file_uploader("📂 Choose a file", type=["pdf", "docx", "txt", "csv"])
 
 if uploaded_file:
-    st.success("PDF uploaded successfully!")
+    if "current_file" not in st.session_state or st.session_state.current_file != uploaded_file.name:
+        with st.spinner("Processing file for the first time... 📄"):
+            # Call our newly unified multi-format function
+            chunks, index = process_file(uploaded_file)
+            
+            st.session_state.chunks = chunks
+            st.session_state.index = index
+            st.session_state.current_file = uploaded_file.name
 
-    # Load models only after upload
-    with st.spinner("Loading models... ⏳"):
-        embed_model, tokenizer, model_llm = load_models()
+    # 2. Retrieve the processed data from memory instantly
+    chunks = st.session_state.chunks
+    index = st.session_state.index
 
-    # Process PDF (cached)
-    with st.spinner("Processing PDF... 📄"):
-        chunks, index = process_pdf(uploaded_file)
-
-    st.divider()
-
-    # -------------------- QUERY --------------------
-    st.subheader("❓ Ask a Question")
-    query = st.text_input("Type your question here...")
-
-    if query:
-        with st.spinner("Thinking... 🤔"):
-
-            # Query embedding
-            query_embedding = embed_model.encode([query], normalize_embeddings=True)
-
-            # Search
-            k = 4
-            distances, indices = index.search(np.array(query_embedding), k)
-
-            # Context
-            retrieved_chunks = [chunks[i] for i in indices[0]]
-            context = "\n".join(retrieved_chunks)
-
-            # Prompt
-            prompt = f"""
-You are an AI assistant.
-
-Explain the answer clearly in simple terms using 3-4 sentences.
-Do not just repeat phrases. Combine ideas into a proper explanation.
-
-Context:
-{context}
-
-Question:
-{query}
-
-Answer:
-"""
-            debug_ids = tokenizer(prompt, return_tensors="pt", truncation=False)["input_ids"]
-            print("Prompt length:", debug_ids.shape[1], "| Model max:", tokenizer.model_max_length)
-            # Generate answer
-            inputs = tokenizer(prompt, return_tensors="pt", truncation=True)
-            outputs = model_llm.generate(**inputs, max_new_tokens=200)
-
-            answer = tokenizer.decode(outputs[0], skip_special_tokens=True)
-
+    # If extraction failed, stop execution
+    if chunks is None or index is None:
+        st.error("❌ Could not extract any readable text from this PDF. Please try a different text-based PDF.")
+    else:
+        st.success("PDF loaded from memory! ⚡")
         st.divider()
 
-        # -------------------- OUTPUT --------------------
-        st.subheader("💡 Answer")
-        st.markdown(f"""
-        <div class="answer-box">
-        {answer}
-        </div>
-        """, unsafe_allow_html=True)
+        query = st.text_input("❓ Type your question here...")
 
-        # Show context
-        with st.expander("🔍 View Retrieved Context"):
-            st.write(context)
+        if query:
+            with st.spinner("Thinking... 🤔"):
+                # Your existing search and Groq query code goes here exactly as it was...
+                # Encode and format the query for FAISS
+                model = load_embedding_model()
+                query_embedding = model.encode([query], normalize_embeddings=True)
+                query_vector = np.array(query_embedding).astype('float32')
+                
+                # Search the index
+                k = 4
+                distances, indices = index.search(query_vector, k)
+
+                retrieved_chunks = [chunks[i] for i in indices[0]]
+                context = "\n\n".join(retrieved_chunks)
+
+                # Query Groq
+                try:
+                    response = client.chat.completions.create(
+                        model="llama-3.1-8b-instant",
+                        messages=[
+                            {
+                                "role": "system",
+                                "content": (
+                                    "You are a senior technical analyst. Your job is to read the provided context "
+                                    "and synthesize the information to answer the user's question completely in your own words. "
+                                    "CRITICAL RULES: "
+                                    "1. ABSOLUTELY NO BULLET POINTS OR LISTS. You must write in paragraph form. "
+                                    "2. DO NOT quote or copy text directly from the context. "
+                                    "3. Explain the concepts naturally in 3 to 4 cohesive sentences. "
+                                    "If you merely repeat the source text, you have failed your instructions."
+                                )
+                            },
+                            {
+                                "role": "user",
+                                "content": f"Context:\n{context}\n\nQuestion:\n{query}"
+                            }
+                        ],
+                        temperature=0.6,
+                        max_tokens=300
+                    )
+                    answer = response.choices[0].message.content
+                except Exception as e:
+                    answer = f"⚠️ Error with the LLM API: {e}"
+
+            # Output the answer
+            st.subheader("💡 Answer")
+            st.write(answer)
+
+            with st.expander("🔍 View Retrieved Context"):
+                st.write(context)
