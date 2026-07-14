@@ -1,18 +1,14 @@
 import os
 import sys
 import streamlit as st
-os.environ["OMP_NUM_THREADS"] = "1"
-os.environ["MKL_NUM_THREADS"] = "1"
-os.environ["TOKENIZERS_PARALLELISM"] = "false"
 import faiss
 import numpy as np
 import pdfplumber
-import pandas as pd
 import tempfile
 import logging
+import requests
 
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from sentence_transformers import SentenceTransformer
 from groq import Groq
 from dotenv import load_dotenv
 from rank_bm25 import BM25Okapi
@@ -22,8 +18,6 @@ from langchain_core.documents import Document
 from langchain_community.document_loaders import Docx2txtLoader, CSVLoader, TextLoader
 
 # 1. Pipeline Environment Overrides & Logging Configuration
-os.environ["HF_HOME"] = "/tmp/clean_hf_cache"
-
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -43,19 +37,73 @@ elif os.getenv("HF_TOKEN"):
 if not GROQ_API_KEY:
     st.error("❌ GROQ_API_KEY is missing. Please check your Secrets or .env file.")
     st.stop()
+if not os.environ.get("HF_TOKEN"):
+    st.error("❌ HF_TOKEN is missing. Please check your Secrets or .env file.")
+    st.stop()
 
 client = Groq(api_key=GROQ_API_KEY)
 
+# ---------------------------------------------------------
+# ☁️ CLOUD API WRAPPERS (Replaces local heavy models)
+# ---------------------------------------------------------
+class CloudEmbeddingModel:
+    def __init__(self):
+        self.api_url = "https://api-inference.huggingface.co/pipeline/feature-extraction/sentence-transformers/all-MiniLM-L6-v2"
+        self.headers = {"Authorization": f"Bearer {os.environ.get('HF_TOKEN')}"}
+
+    def encode(self, texts, normalize_embeddings=True):
+        logger.info(f"☁️ Sending {len(texts)} chunks to Hugging Face API for vector embedding...")
+        response = requests.post(
+            self.api_url, 
+            headers=self.headers, 
+            json={"inputs": texts, "options": {"wait_for_model": True}}
+        )
+        if response.status_code != 200:
+            logger.error(f"HF API Error: {response.text}")
+            st.error(f"Hugging Face API Error: {response.text}")
+            st.stop()
+        return response.json()
+
+class CloudRerankerModel:
+    def __init__(self):
+        self.api_url = "https://api-inference.huggingface.co/models/cross-encoder/ms-marco-MiniLM-L-6-v2"
+        self.headers = {"Authorization": f"Bearer {os.environ.get('HF_TOKEN')}"}
+
+    def predict(self, pairs):
+        logger.info(f"☁️ Sending {len(pairs)} candidate pairs to Hugging Face API for reranking...")
+        # Format required by HF text-classification endpoint for cross-encoders
+        inputs = [{"text": query, "text_pair": doc} for query, doc in pairs]
+        response = requests.post(
+            self.api_url, 
+            headers=self.headers, 
+            json={"inputs": inputs, "options": {"wait_for_model": True}}
+        )
+        
+        if response.status_code != 200:
+            logger.error(f"HF Reranker Error: {response.text}")
+            return [0] * len(pairs)
+            
+        results = response.json()
+        
+        # Parse the nested dictionary response from the HF classification pipeline
+        scores = []
+        for res in results:
+            if isinstance(res, list):
+                scores.append(res[0].get("score", 0.0))
+            elif isinstance(res, dict):
+                scores.append(res.get("score", 0.0))
+            else:
+                scores.append(res)
+        return scores
+
 @st.cache_resource
 def load_embedding_model():
-    logger.info("📥 Initializing Bi-Encoder Embedding Model: all-MiniLM-L6-v2")
-    return SentenceTransformer('all-MiniLM-L6-v2')
+    return CloudEmbeddingModel()
 
 @st.cache_resource
 def load_reranker_model():
-    logger.info("📥 Initializing Cross-Encoder Reranker Model: ms-marco-MiniLM-L-6-v2")
-    from sentence_transformers import CrossEncoder
-    return CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')
+    return CloudRerankerModel()
+# ---------------------------------------------------------
 
 # 2. Unified File Ingestion Pipeline with Absolute Temp Paths
 def process_file(file):
@@ -63,7 +111,6 @@ def process_file(file):
     file_extension = file.name.split(".")[-1].lower()
     logger.info(f"🚀 Starting ingestion pipeline for: '{file.name}'")
     
-    # Use native absolute container path mounting
     with tempfile.NamedTemporaryFile(delete=False, suffix=f".{file_extension}") as temp_file:
         temp_file.write(file.read())
         temp_filename = temp_file.name
@@ -159,7 +206,7 @@ def hybrid_search(search_query, chunks, dense_index, bm25_index, top_n=4):
     if not candidate_chunks:
         return []
 
-    # Second Stage Reranking Pass via Cross-Encoder
+    # Second Stage Reranking Pass via Cross-Encoder API
     logger.info("Passing candidate blocks to Cross-Encoder reranking tier...")
     reranker = load_reranker_model()
     pair_inputs = [[search_query, chunk] for chunk in candidate_chunks]
@@ -188,7 +235,7 @@ uploaded_file = st.file_uploader("📂 Choose a file", type=["pdf", "docx", "txt
 
 if uploaded_file:
     if "current_file" not in st.session_state or st.session_state.current_file != uploaded_file.name:
-        with st.spinner("Processing file for the first time... 📄"):
+        with st.spinner("Processing file via Hugging Face Cloud APIs... ☁️📄"):
             chunks, dense_index, bm25_index = process_file(uploaded_file)
             
             st.session_state.chunks = chunks
@@ -203,7 +250,7 @@ if uploaded_file:
     if chunks is None or dense_index is None or bm25_index is None:
         st.error("❌ Could not extract any readable text from this file. Please try a different text-based document.")
     else:
-        st.success("File loaded from memory! ⚡")
+        st.success("File processed securely and loaded from memory! ⚡")
         st.divider()
 
         if "messages" not in st.session_state:

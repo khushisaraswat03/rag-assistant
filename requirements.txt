@@ -1,10 +1,6 @@
---extra-index-url https://download.pytorch.org/whl/cpu
-torch
-torchvision
 streamlit
 pdfplumber
 langchain-text-splitters
-sentence-transformers
 faiss-cpu
 langchain
 langchain-core
@@ -13,3 +9,4 @@ rank-bm25
 groq
 python-dotenv
 docx2txt
+requests
