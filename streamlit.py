@@ -14,12 +14,6 @@ from rank_bm25 import BM25Okapi
 from langchain_core.documents import Document
 from langchain_community.document_loaders import Docx2txtLoader, CSVLoader, TextLoader
 
-import subprocess
-import sys
-try:
-    import docx2txt
-except ImportError:
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "docx2txt"])
 
 # 1. Load environment variables
 load_dotenv()
