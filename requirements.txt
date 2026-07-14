@@ -1,9 +1,10 @@
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch
+torchvision
 streamlit
 pdfplumber
 langchain-text-splitters
 sentence-transformers
-torch
-torchvision
 faiss-cpu
 langchain
 langchain-core
