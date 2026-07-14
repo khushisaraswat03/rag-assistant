@@ -2,6 +2,7 @@ streamlit
 pdfplumber
 langchain-text-splitters
 faiss-cpu
+scikit-learn
 langchain
 langchain-core
 langchain-community

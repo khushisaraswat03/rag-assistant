@@ -1,13 +1,12 @@
 import os
 import sys
-import time
-import requests
 import streamlit as st
 import faiss
 import numpy as np
 import pdfplumber
 import tempfile
 import logging
+from sklearn.feature_extraction.text import TfidfVectorizer
 
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from groq import Groq
@@ -28,130 +27,17 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
-if "HF_TOKEN" in st.secrets:
-    os.environ["HF_TOKEN"] = st.secrets["HF_TOKEN"]
-elif os.getenv("HF_TOKEN"):
-    os.environ["HF_TOKEN"] = os.getenv("HF_TOKEN")
-
 if not GROQ_API_KEY:
     st.error("❌ GROQ_API_KEY is missing. Please check your Secrets or .env file.")
-    st.stop()
-if not os.environ.get("HF_TOKEN"):
-    st.error("❌ HF_TOKEN is missing. Please check your Secrets or .env file.")
     st.stop()
 
 client = Groq(api_key=GROQ_API_KEY)
 
-# ---------------------------------------------------------
-# ☁️ CLOUD API WRAPPERS (Bulletproofed with Retry & Batching)
-# ---------------------------------------------------------
-class CloudEmbeddingModel:
-    def __init__(self):
-        self.api_url = "https://api-inference.huggingface.co/pipeline/feature-extraction/sentence-transformers/all-MiniLM-L6-v2"
-        self.headers = {"Authorization": f"Bearer {os.environ.get('HF_TOKEN')}"}
-
-    def encode(self, texts, normalize_embeddings=True):
-        logger.info(f"☁️ Embedding {len(texts)} chunks via Hugging Face API...")
-        all_embeddings = []
-        batch_size = 10 
-        
-        for i in range(0, len(texts), batch_size):
-            batch = texts[i:i + batch_size]
-            success = False
-            retries = 3
-            
-            while not success and retries > 0:
-                try:
-                    response = requests.post(
-                        self.api_url, 
-                        headers=self.headers, 
-                        json={"inputs": batch, "options": {"wait_for_model": True}},
-                        timeout=45
-                    )
-                    
-                    if response.status_code == 200:
-                        all_embeddings.extend(response.json())
-                        success = True
-                        time.sleep(1) # Rate limit protection
-                    elif response.status_code in [503, 429]:
-                        logger.warning(f"HF API busy (Status {response.status_code}). Retrying in 10 seconds...")
-                        time.sleep(10)
-                        retries -= 1
-                    else:
-                        logger.error(f"HF API Error: {response.text}")
-                        st.error(f"Hugging Face API Error: {response.text}")
-                        st.stop()
-                        
-                except requests.exceptions.RequestException as e:
-                    logger.warning(f"Connection issue: {e}. Retrying...")
-                    time.sleep(5)
-                    retries -= 1
-            
-            if not success:
-                st.error("❌ Hugging Face API failed to respond after multiple attempts. Please try again later.")
-                st.stop()
-                
-        return all_embeddings
-
-class CloudRerankerModel:
-    def __init__(self):
-        self.api_url = "https://api-inference.huggingface.co/models/cross-encoder/ms-marco-MiniLM-L-6-v2"
-        self.headers = {"Authorization": f"Bearer {os.environ.get('HF_TOKEN')}"}
-
-    def predict(self, pairs):
-        logger.info(f"☁️ Reranking {len(pairs)} candidate pairs via Hugging Face API...")
-        inputs = [{"text": query, "text_pair": doc} for query, doc in pairs]
-        
-        retries = 3
-        while retries > 0:
-            try:
-                response = requests.post(
-                    self.api_url, 
-                    headers=self.headers, 
-                    json={"inputs": inputs, "options": {"wait_for_model": True}},
-                    timeout=45
-                )
-                
-                if response.status_code == 200:
-                    results = response.json()
-                    scores = []
-                    for res in results:
-                        if isinstance(res, list):
-                            scores.append(res[0].get("score", 0.0))
-                        elif isinstance(res, dict):
-                            scores.append(res.get("score", 0.0))
-                        else:
-                            scores.append(res)
-                    return scores
-                elif response.status_code in [503, 429]:
-                    logger.warning(f"HF Reranker busy (Status {response.status_code}). Retrying in 10 seconds...")
-                    time.sleep(10)
-                    retries -= 1
-                else:
-                    logger.error(f"HF Reranker Error: {response.text}")
-                    return [0.0] * len(pairs)
-                    
-            except requests.exceptions.RequestException as e:
-                logger.warning(f"Connection issue: {e}. Retrying...")
-                time.sleep(5)
-                retries -= 1
-                
-        return [0.0] * len(pairs) # Fallback if reranking fails entirely
-
-@st.cache_resource
-def load_embedding_model():
-    return CloudEmbeddingModel()
-
-@st.cache_resource
-def load_reranker_model():
-    return CloudRerankerModel()
-# ---------------------------------------------------------
-
-# 2. Unified File Ingestion Pipeline
+# 2. Unified File Ingestion Pipeline (100% Local Math)
 def process_file(file):
     file.seek(0)
     file_extension = file.name.split(".")[-1].lower()
-    logger.info(f"🚀 Starting ingestion pipeline for: '{file.name}'")
+    logger.info(f"🚀 Starting local ingestion pipeline for: '{file.name}'")
     
     with tempfile.NamedTemporaryFile(delete=False, suffix=f".{file_extension}") as temp_file:
         temp_file.write(file.read())
@@ -176,49 +62,52 @@ def process_file(file):
     except Exception as e:
         logger.error(f"❌ Extraction error: {e}", exc_info=True)
         st.error(f"⚠️ Extraction Error: {e}")
-        return None, None, None
+        return None, None, None, None
     finally:
         if os.path.exists(temp_filename):
             os.remove(temp_filename)
 
     combined_text = "\n\n".join([doc.page_content for doc in documents])
     if not combined_text.strip():
-        return None, None, None
+        return None, None, None, None
 
     splitter = RecursiveCharacterTextSplitter(chunk_size=400, chunk_overlap=50)
     chunks = splitter.split_text(combined_text)
     logger.info(f"🧩 Split data into {len(chunks)} fragments.")
     if not chunks:
-        return None, None, None
+        return None, None, None, None
 
-    # ---- BUILD INDEXES ----
-    model = load_embedding_model()
-    embeddings = model.encode(chunks, normalize_embeddings=True)
+    # ---- BUILD LOCAL DENSE INDEX (TF-IDF Vector Space) ----
+    vectorizer = TfidfVectorizer(max_features=384)  # Match standard embedding dimensions
+    tfidf_matrix = vectorizer.fit_transform(chunks).toarray().astype('float32')
     
-    dense_index = faiss.IndexFlatIP(len(embeddings[0]))
-    dense_index.add(np.array(embeddings).astype('float32'))
-    logger.info("✅ FAISS Dense Index established.")
+    dense_index = faiss.IndexFlatIP(tfidf_matrix.shape[1])
+    dense_index.add(tfidf_matrix)
+    logger.info("✅ Local FAISS Dense Index established via TF-IDF Vectorizer.")
     
+    # ---- BUILD SPARSE KEYWORD INDEX ----
     tokenized_chunks = [chunk.lower().split(" ") for chunk in chunks]
     bm25_index = BM25Okapi(tokenized_chunks)
     logger.info("✅ BM25 Sparse Index established.")
     
-    return chunks, dense_index, bm25_index
+    return chunks, dense_index, bm25_index, vectorizer
 
-# 3. Two-Stage Retrieval Logic
-def hybrid_search(search_query, chunks, dense_index, bm25_index, top_n=4):
-    model = load_embedding_model()
-    query_embedding = model.encode([search_query], normalize_embeddings=True)
-    query_vector = np.array(query_embedding).astype('float32')
+# 3. Hybrid Retrieval Logic via Reciprocal Rank Fusion
+def hybrid_search(search_query, chunks, dense_index, bm25_index, vectorizer, top_n=4):
+    logger.info(f"🔍 Executing Hybrid Retrieval Pass for Query: '{search_query}'")
     
+    # 1. Local Dense Search Pass
+    query_vector = vectorizer.transform([search_query]).toarray().astype('float32')
     initial_k = min(len(chunks), 10)
     _, dense_indices = dense_index.search(query_vector, initial_k)
     dense_ranked_list = dense_indices[0].tolist()
     
+    # 2. Sparse Search Pass
     tokenized_query = search_query.lower().split(" ")
     bm25_scores = bm25_index.get_scores(tokenized_query)
     bm25_ranked_list = np.argsort(bm25_scores)[::-1][:initial_k].tolist()
     
+    # 3. Reciprocal Rank Fusion (RRF) Sorting Tiers
     rrf_scores = {}
     k_constant = 60
     for rank, chunk_idx in enumerate(dense_ranked_list):
@@ -229,21 +118,12 @@ def hybrid_search(search_query, chunks, dense_index, bm25_index, top_n=4):
         rrf_scores[chunk_idx] += 1.0 / (k_constant + (rank + 1))
         
     sorted_chunks = sorted(rrf_scores.items(), key=lambda item: item[1], reverse=True)
-    candidate_indices = [item[0] for item in sorted_chunks[:10]]
-    candidate_chunks = [chunks[idx] for idx in candidate_indices]
-
-    if not candidate_chunks:
-        return []
-
-    reranker = load_reranker_model()
-    pair_inputs = [[search_query, chunk] for chunk in candidate_chunks]
-    rerank_scores = reranker.predict(pair_inputs)
     
-    reranked_results = sorted(zip(candidate_chunks, rerank_scores), key=lambda x: x[1], reverse=True)
-    
+    # Deduplication and Output Extraction
     final_chunks = []
     seen_texts = set()
-    for chunk, score in reranked_results:
+    for chunk_idx, score in sorted_chunks:
+        chunk = chunks[chunk_idx]
         simplified_text = "".join(chunk.lower().split())
         if simplified_text not in seen_texts:
             seen_texts.add(simplified_text)
@@ -260,22 +140,24 @@ uploaded_file = st.file_uploader("📂 Choose a file", type=["pdf", "docx", "txt
 
 if uploaded_file:
     if "current_file" not in st.session_state or st.session_state.current_file != uploaded_file.name:
-        with st.spinner("Processing file via Hugging Face Cloud APIs... ☁️📄"):
-            chunks, dense_index, bm25_index = process_file(uploaded_file)
+        with st.spinner("Processing file securely on local engine... 📄⚡"):
+            chunks, dense_index, bm25_index, vectorizer = process_file(uploaded_file)
             
             st.session_state.chunks = chunks
             st.session_state.dense_index = dense_index
             st.session_state.bm25_index = bm25_index
+            st.session_state.vectorizer = vectorizer
             st.session_state.current_file = uploaded_file.name
 
     chunks = st.session_state.chunks
     dense_index = st.session_state.dense_index
     bm25_index = st.session_state.bm25_index
+    vectorizer = st.session_state.vectorizer
 
     if chunks is None or dense_index is None or bm25_index is None:
         st.error("❌ Could not extract text. Please try a different document.")
     else:
-        st.success("File processed securely and loaded! ⚡")
+        st.success("File processed securely and loaded instantly! ⚡")
         st.divider()
 
         if "messages" not in st.session_state:
@@ -326,6 +208,7 @@ if uploaded_file:
                     chunks=chunks, 
                     dense_index=dense_index, 
                     bm25_index=bm25_index, 
+                    vectorizer=vectorizer,
                     top_n=4
                 )
                 context = "\n\n".join(retrieved_chunks)
@@ -360,7 +243,7 @@ if uploaded_file:
             with st.chat_message("assistant"):
                 st.write(answer)
                 st.markdown("---")
-                with st.expander("🔍 View Reranked Context Breakdown"):
+                with st.expander("🔍 View Hybrid Context Breakdown"):
                     st.caption(f"**Search Query Used:** `{search_query}`")
                     for idx, chunk in enumerate(retrieved_chunks):
                         st.markdown(f"> **Source Block {idx+1}:** {chunk}")
