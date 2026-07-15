@@ -285,7 +285,10 @@ if uploaded_file and "chunks" in st.session_state:
                     vectorizer=vectorizer,
                     top_n=4
                 )
-                context = "\n\n".join(retrieved_chunks)
+                # --- NEW INJECTION PATTERN: Tagging the context blocks ---
+                context_with_citations = ""
+                for idx, chunk in enumerate(retrieved_chunks):
+                    context_with_citations += f"\n--- [Source Block {idx+1}] ---\n{chunk}\n"
 
             # Execution block for generative streaming
             with st.chat_message("assistant"):
@@ -300,16 +303,18 @@ if uploaded_file and "chunks" in st.session_state:
                                     "and synthesize the information to answer the user's question completely in your own words. "
                                     "CRITICAL RULES:\n"
                                     "1. ABSOLUTELY NO BULLET POINTS OR LISTS. You must write in paragraph form.\n"
-                                    "2. DO NOT quote or copy text directly from the context.\n"
-                                    "3. Explain the concepts naturally in 3 to 4 cohesive sentences."
+                                    "2. Explain the concepts naturally in 3 to 4 cohesive sentences.\n"
+                                    "3. YOU MUST CITE YOUR SOURCES. Whenever you state a fact from the context, append the source block "
+                                    "number in parentheses at the end of the sentence (e.g., '...this is how the system works (Source Block 2).'). "
+                                    "If you combine information, cite multiple (e.g., '(Source Block 1, Source Block 3)')."
                                 )
                             },
                             {
                                 "role": "user",
-                                "content": f"Context:\n{context}\n\nQuestion:\n{query}"
+                                "content": f"Context:\n{context_with_citations}\n\nQuestion:\n{query}"
                             }
                         ],
-                        temperature=0.6,
+                        temperature=0.3, # Lowered slightly for more factual/rigid adherence
                         max_tokens=300,
                         stream=True  
                     )
