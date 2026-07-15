@@ -16,7 +16,54 @@ from rank_bm25 import BM25Okapi
 from langchain_core.documents import Document
 from langchain_community.document_loaders import Docx2txtLoader, CSVLoader, TextLoader
 
-# 1. Pipeline Environment Overrides & Logging
+# --- 1. PAGE SETUP & CUSTOM COMPACT THEME ---
+st.set_page_config(page_title="RAG Intelligence Hub", page_icon="⚡", layout="wide")
+
+# Inject Custom CSS for Premium UI Styling
+st.markdown("""
+    <style>
+    /* Main Background & Fonts */
+    .stApp {
+        background-color: #0f111a;
+        color: #e2e8f0;
+    }
+    
+    /* Header styling */
+    h1 {
+        font-family: 'Inter', sans-serif;
+        font-weight: 800;
+        background: linear-gradient(45deg, #6366f1, #a855f7);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        padding-bottom: 15px;
+    }
+    
+    /* Custom Sidebar styling */
+    section[data-testid="stSidebar"] {
+        background-color: #161925 !important;
+        border-right: 1px solid #23283d;
+    }
+    
+    /* Clean container panels */
+    div[data-testid="stVerticalBlock"] > div:has(div.stMarkdown) {
+        border-radius: 8px;
+    }
+    
+    /* Modern Input bar adjustment */
+    .stChatInputContainer {
+        border-radius: 12px !important;
+        border: 1px solid #3b4261 !important;
+        background-color: #161925 !important;
+    }
+    
+    /* Custom divider accent color */
+    hr {
+        border-color: #23283d !important;
+    }
+    </style>
+""", unsafe_allow_html=True)
+
+# 2. Pipeline Environment Overrides & Logging
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -33,7 +80,7 @@ if not GROQ_API_KEY:
 
 client = Groq(api_key=GROQ_API_KEY)
 
-# 2. Unified File Ingestion Pipeline (100% Local Math)
+# 3. Unified File Ingestion Pipeline (100% Local Math)
 def process_file(file):
     file.seek(0)
     file_extension = file.name.split(".")[-1].lower()
@@ -78,7 +125,7 @@ def process_file(file):
         return None, None, None, None
 
     # ---- BUILD LOCAL DENSE INDEX (TF-IDF Vector Space) ----
-    vectorizer = TfidfVectorizer(max_features=384)  # Match standard embedding dimensions
+    vectorizer = TfidfVectorizer(max_features=384)  
     tfidf_matrix = vectorizer.fit_transform(chunks).toarray().astype('float32')
     
     dense_index = faiss.IndexFlatIP(tfidf_matrix.shape[1])
@@ -92,22 +139,19 @@ def process_file(file):
     
     return chunks, dense_index, bm25_index, vectorizer
 
-# 3. Hybrid Retrieval Logic via Reciprocal Rank Fusion
+# 4. Hybrid Retrieval Logic via Reciprocal Rank Fusion
 def hybrid_search(search_query, chunks, dense_index, bm25_index, vectorizer, top_n=4):
     logger.info(f"🔍 Executing Hybrid Retrieval Pass for Query: '{search_query}'")
     
-    # 1. Local Dense Search Pass
     query_vector = vectorizer.transform([search_query]).toarray().astype('float32')
     initial_k = min(len(chunks), 10)
     _, dense_indices = dense_index.search(query_vector, initial_k)
     dense_ranked_list = dense_indices[0].tolist()
     
-    # 2. Sparse Search Pass
     tokenized_query = search_query.lower().split(" ")
     bm25_scores = bm25_index.get_scores(tokenized_query)
     bm25_ranked_list = np.argsort(bm25_scores)[::-1][:initial_k].tolist()
     
-    # 3. Reciprocal Rank Fusion (RRF) Sorting Tiers
     rrf_scores = {}
     k_constant = 60
     for rank, chunk_idx in enumerate(dense_ranked_list):
@@ -119,7 +163,6 @@ def hybrid_search(search_query, chunks, dense_index, bm25_index, vectorizer, top
         
     sorted_chunks = sorted(rrf_scores.items(), key=lambda item: item[1], reverse=True)
     
-    # Deduplication and Output Extraction
     final_chunks = []
     seen_texts = set()
     for chunk_idx, score in sorted_chunks:
@@ -134,50 +177,85 @@ def hybrid_search(search_query, chunks, dense_index, bm25_index, vectorizer, top
     return final_chunks
 
 # -------------------- UI LAYOUT --------------------
-st.title("My RAG Assistant 🤖")
 
-uploaded_file = st.file_uploader("📂 Choose a file", type=["pdf", "docx", "txt", "csv"])
+# --- SIDEBAR: Workspace & System Status ---
+with st.sidebar:
+    st.image("https://img.icons8.com/nolan/96/artificial-intelligence.png", width=60)
+    st.markdown("### **Control Panel**")
+    st.caption("Manage workspace states and session context boundaries.")
+    st.markdown("---")
+    
+    if st.button("🗑️ Reset Chat Workspace", use_container_width=True):
+        st.session_state.messages = []
+        st.success("Chat history cleared.")
+        st.rerun()
+        
+    st.markdown("---")
+    st.markdown("##### **System Status**")
+    st.info("⚡ Ingestion Engine: `Local Matrix` \n\n🤖 LLM Core: `Llama-3.1` \n\n🔒 Sandbox Status: `Secure`")
 
-if uploaded_file:
-    if "current_file" not in st.session_state or st.session_state.current_file != uploaded_file.name:
-        with st.spinner("Processing file securely on local engine... 📄⚡"):
-            chunks, dense_index, bm25_index, vectorizer = process_file(uploaded_file)
-            
-            st.session_state.chunks = chunks
-            st.session_state.dense_index = dense_index
-            st.session_state.bm25_index = bm25_index
-            st.session_state.vectorizer = vectorizer
-            st.session_state.current_file = uploaded_file.name
+# --- MAIN WORKSPACE INTERFACE ---
+st.title("RAG Intelligence Hub")
+st.markdown("Transform your unstructured text assets into interactive knowledge engines instantly.")
+st.markdown("---")
 
+# Visual Grid Split: Document Processing vs Status Indicators
+col1, col2 = st.columns([2, 1])
+
+with col1:
+    uploaded_file = st.file_uploader("📂 Drag & Drop Knowledge Assets Here", type=["pdf", "docx", "txt", "csv"], label_visibility="collapsed")
+
+with col2:
+    if uploaded_file:
+        if "current_file" not in st.session_state or st.session_state.current_file != uploaded_file.name:
+            with st.spinner("Parsing data matrices... 📄⚡"):
+                chunks, dense_index, bm25_index, vectorizer = process_file(uploaded_file)
+                
+                st.session_state.chunks = chunks
+                st.session_state.dense_index = dense_index
+                st.session_state.bm25_index = bm25_index
+                st.session_state.vectorizer = vectorizer
+                st.session_state.current_file = uploaded_file.name
+                st.session_state.messages = [] 
+        
+        st.success(f"Connected: **{uploaded_file.name}**")
+    else:
+        st.warning("⚠️ Workspace Status: Waiting for Data Ingestion")
+
+# --- CHAT PIPELINE EXECUTION ---
+if uploaded_file and "chunks" in st.session_state:
     chunks = st.session_state.chunks
     dense_index = st.session_state.dense_index
     bm25_index = st.session_state.bm25_index
     vectorizer = st.session_state.vectorizer
 
     if chunks is None or dense_index is None or bm25_index is None:
-        st.error("❌ Could not extract text. Please try a different document.")
+        st.error("❌ Extraction failure. Please parse an alternative plaintext target.")
     else:
-        st.success("File processed securely and loaded instantly! ⚡")
-        st.divider()
-
+        st.markdown("### **Knowledge Conversation Workspace**")
+        
         if "messages" not in st.session_state:
             st.session_state.messages = []
 
+        # Display conversational timeline
         for message in st.session_state.messages:
             with st.chat_message(message["role"]):
                 st.write(message["content"])
 
-        if query := st.chat_input("❓ Ask something about your document..."):
+        # Input submission trigger
+        if query := st.chat_input("💬 Ask something about your document..."):
             with st.chat_message("user"):
                 st.write(query)
             
             st.session_state.messages.append({"role": "user", "content": query})
 
-            with st.spinner("Thinking... 🤔"):
+            with st.spinner("Extracting conceptual context... 🔍"):
                 search_query = query
+                
                 if len(st.session_state.messages) > 1:
                     history_str = ""
-                    for msg in st.session_state.messages[:-1]:
+                    recent_history = st.session_state.messages[-5:-1] 
+                    for msg in recent_history:
                         history_str += f"{msg['role'].capitalize()}: {msg['content']}\n"
                     
                     try:
@@ -186,11 +264,7 @@ if uploaded_file:
                             messages=[
                                 {
                                     "role": "system",
-                                    "content": (
-                                        "You are a query-rewriter. Given a chat history and a follow-up question, "
-                                        "rephrase the follow-up question into a standalone question that can be understood "
-                                        "WITHOUT the chat history. Do NOT answer the question."
-                                    )
+                                    "content": "You are a query-rewriter. Given a chat history and a follow-up question, rephrase the follow-up question into a standalone question without answering it."
                                 },
                                 {
                                     "role": "user",
@@ -213,8 +287,10 @@ if uploaded_file:
                 )
                 context = "\n\n".join(retrieved_chunks)
 
+            # Execution block for generative streaming
+            with st.chat_message("assistant"):
                 try:
-                    response = client.chat.completions.create(
+                    stream = client.chat.completions.create(
                         model="llama-3.1-8b-instant",
                         messages=[
                             {
@@ -222,9 +298,9 @@ if uploaded_file:
                                 "content": (
                                     "You are a senior technical analyst. Your job is to read the provided context "
                                     "and synthesize the information to answer the user's question completely in your own words. "
-                                    "CRITICAL RULES: "
-                                    "1. ABSOLUTELY NO BULLET POINTS OR LISTS. You must write in paragraph form. "
-                                    "2. DO NOT quote or copy text directly from the context. "
+                                    "CRITICAL RULES:\n"
+                                    "1. ABSOLUTELY NO BULLET POINTS OR LISTS. You must write in paragraph form.\n"
+                                    "2. DO NOT quote or copy text directly from the context.\n"
                                     "3. Explain the concepts naturally in 3 to 4 cohesive sentences."
                                 )
                             },
@@ -234,14 +310,21 @@ if uploaded_file:
                             }
                         ],
                         temperature=0.6,
-                        max_tokens=300
+                        max_tokens=300,
+                        stream=True  
                     )
-                    answer = response.choices[0].message.content
+                    
+                    def stream_generator():
+                        for chunk in stream:
+                            if chunk.choices[0].delta.content is not None:
+                                yield chunk.choices[0].delta.content
+                    
+                    answer = st.write_stream(stream_generator())
+                    
                 except Exception as e:
                     answer = f"⚠️ Error with the LLM API: {e}"
+                    st.write(answer)
 
-            with st.chat_message("assistant"):
-                st.write(answer)
                 st.markdown("---")
                 with st.expander("🔍 View Hybrid Context Breakdown"):
                     st.caption(f"**Search Query Used:** `{search_query}`")
